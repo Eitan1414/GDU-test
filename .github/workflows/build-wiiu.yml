@@ -1,0 +1,91 @@
+name: Build GDU for Wii U
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    name: Validate project
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check required files
+        run: |
+          test -f CMakeLists.txt
+          test -f source/main.cpp
+          test -f tools/validate_levels.py
+          test -f assets/levels/pack.json
+
+      - name: Validate the 21 levels
+        run: python tools/validate_levels.py
+
+      - name: Validate the 21 music files
+        shell: bash
+        run: |
+          MUSIC_COUNT=$(find assets/music -maxdepth 1 -type f -name '*.ogg' | wc -l)
+          echo "OGG music files: ${MUSIC_COUNT}"
+          test "${MUSIC_COUNT}" -eq 21
+
+  build-wiiu:
+    name: Compile RPX and WUHB
+    needs: validate
+    runs-on: ubuntu-latest
+    container: devkitpro/devkitppc:latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Wii U development packages
+        run: dkp-pacman -Syu --noconfirm --needed wiiu-dev
+
+      - name: Configure CMake for Wii U
+        shell: bash
+        run: |
+          rm -rf build
+          mkdir -p build
+          cd build
+          /opt/devkitpro/portlibs/wiiu/bin/powerpc-eabi-cmake .. \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Compile GDU
+        run: cmake --build build --parallel 2
+
+      - name: Verify RPX output
+        run: |
+          test -s build/gdu.rpx
+          file build/gdu.rpx || true
+
+      - name: Create WUHB package
+        shell: bash
+        run: |
+          command -v wuhbtool
+
+          wuhbtool build/gdu.rpx build/gdu.wuhb \
+            --name="GDU - Pulse Rift" \
+            --short-name="GDU" \
+            --author="Eitan1414"
+
+          test -s build/gdu.wuhb
+
+      - name: Prepare Aroma SD-card folder
+        shell: bash
+        run: |
+          APP_DIR="dist/wiiu/apps/gdu"
+
+         
