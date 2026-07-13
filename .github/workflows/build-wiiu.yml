@@ -2,90 +2,159 @@ name: Build GDU for Wii U
 
 on:
   push:
-    branches: [main]
-    tags: ["v*"]
+    branches:
+      - main
   pull_request:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  validate:
-    name: Validate project
+  build-wiiu:
+    name: Validate and compile GDU
     runs-on: ubuntu-latest
+
+    container:
+      image: devkitpro/devkitppc:latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Check required files
+      - name: Locate or extract the GDU project
+        shell: bash
         run: |
-          test -f CMakeLists.txt
-          test -f source/main.cpp
-          test -f tools/validate_levels.py
-          test -f assets/levels/pack.json
+          set -euo pipefail
+
+          echo "Repository contents:"
+          find . -maxdepth 2 -type f -print
+
+          # Cas normal : les fichiers ont été extraits à la racine.
+          if [ -f "CMakeLists.txt" ]; then
+            PROJECT_DIR="$(realpath .)"
+            echo "Project already extracted at repository root."
+
+          # Cas actuel : le dépôt contient seulement l'archive ZIP.
+          else
+            ZIP_FILE="$(find . -maxdepth 1 -type f \
+              -name 'GDU-test*.zip' -o -name 'GDU*.zip' \
+              -print -quit)"
+
+            if [ -z "${ZIP_FILE}" ]; then
+              echo "::error::No CMakeLists.txt and no GDU ZIP archive were found."
+              exit 1
+            fi
+
+            echo "Extracting: ${ZIP_FILE}"
+            rm -rf extracted-project
+            mkdir -p extracted-project
+            unzip -q "${ZIP_FILE}" -d extracted-project
+
+            CMAKE_FILE="$(find extracted-project -type f \
+              -name CMakeLists.txt -print -quit)"
+
+            if [ -z "${CMAKE_FILE}" ]; then
+              echo "::error::The ZIP does not contain CMakeLists.txt."
+              exit 1
+            fi
+
+            PROJECT_DIR="$(realpath "$(dirname "${CMAKE_FILE}")")"
+          fi
+
+          echo "Detected project directory: ${PROJECT_DIR}"
+          echo "PROJECT_DIR=${PROJECT_DIR}" >> "${GITHUB_ENV}"
+
+      - name: Check required project files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f "${PROJECT_DIR}/CMakeLists.txt"
+          test -f "${PROJECT_DIR}/source/main.cpp"
+          test -f "${PROJECT_DIR}/source/Game.cpp"
+          test -f "${PROJECT_DIR}/source/LevelPack.cpp"
+          test -f "${PROJECT_DIR}/include/gdu/Game.hpp"
+          test -f "${PROJECT_DIR}/include/gdu/LevelPack.hpp"
+          test -f "${PROJECT_DIR}/tools/validate_levels.py"
+          test -f "${PROJECT_DIR}/assets/levels/pack.json"
+
+          echo "All required project files were found."
 
       - name: Validate the 21 levels
-        run: python tools/validate_levels.py
-
-      - name: Validate the 21 music files
         shell: bash
         run: |
-          MUSIC_COUNT=$(find assets/music -maxdepth 1 -type f -name '*.ogg' | wc -l)
-          echo "OGG music files: ${MUSIC_COUNT}"
-          test "${MUSIC_COUNT}" -eq 21
+          set -euo pipefail
+          cd "${PROJECT_DIR}"
+          python tools/validate_levels.py
 
-  build-wiiu:
-    name: Compile RPX and WUHB
-    needs: validate
-    runs-on: ubuntu-latest
-    container: devkitpro/devkitppc:latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Wii U development packages
-        run: dkp-pacman -Syu --noconfirm --needed wiiu-dev
-
-      - name: Configure CMake for Wii U
+      - name: Validate the music pack
         shell: bash
         run: |
-          rm -rf build
-          mkdir -p build
-          cd build
-          /opt/devkitpro/portlibs/wiiu/bin/powerpc-eabi-cmake .. \
+          set -euo pipefail
+
+          MUSIC_COUNT="$(find "${PROJECT_DIR}/assets/music" \
+            -maxdepth 1 -type f -name '*.ogg' | wc -l | tr -d ' ')"
+
+          echo "OGG tracks found: ${MUSIC_COUNT}"
+
+          if [ "${MUSIC_COUNT}" -ne 21 ]; then
+            echo "::error::Expected 21 OGG tracks, found ${MUSIC_COUNT}."
+            exit 1
+          fi
+
+      - name: Show Wii U tools
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "DEVKITPRO=${DEVKITPRO}"
+          echo "DEVKITPPC=${DEVKITPPC}"
+
+          command -v powerpc-eabi-g++
+          command -v cmake
+          command -v wuhbtool
+          command -v elf2rpl
+
+          powerpc-eabi-g++ --version
+          cmake --version
+
+      - name: Configure Wii U build
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BUILD_DIR="${GITHUB_WORKSPACE}/build"
+          rm -rf "${BUILD_DIR}"
+
+          /opt/devkitpro/portlibs/wiiu/bin/powerpc-eabi-cmake \
+            -S "${PROJECT_DIR}" \
+            -B "${BUILD_DIR}" \
             -DCMAKE_BUILD_TYPE=Release
 
-      - name: Compile GDU
-        run: cmake --build build --parallel 2
-
-      - name: Verify RPX output
-        run: |
-          test -s build/gdu.rpx
-          file build/gdu.rpx || true
-
-      - name: Create WUHB package
+      - name: Compile Wii U RPX
         shell: bash
         run: |
-          command -v wuhbtool
+          set -euo pipefail
 
-          wuhbtool build/gdu.rpx build/gdu.wuhb \
+          cmake --build "${GITHUB_WORKSPACE}/build" \
+            --config Release \
+            --parallel 2
+
+          test -s "${GITHUB_WORKSPACE}/build/gdu.rpx"
+
+          echo "RPX successfully compiled:"
+          ls -lh "${GITHUB_WORKSPACE}/build/gdu.rpx"
+
+      - name: Create Aroma WUHB
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          wuhbtool \
+            "${GITHUB_WORKSPACE}/build/gdu.rpx" \
+            "${GITHUB_WORKSPACE}/build/gdu.wuhb" \
             --name="GDU - Pulse Rift" \
             --short-name="GDU" \
-            --author="Eitan1414"
-
-          test -s build/gdu.wuhb
-
-      - name: Prepare Aroma SD-card folder
-        shell: bash
-        run: |
-          APP_DIR="dist/wiiu/apps/gdu"
-
-         
+            --author="Eitan1414" \
+           
