@@ -1,4 +1,4 @@
-name: Build GDU V4.3 Overhead 3D WUHB
+me: Build GDU V4.3 Overhead 3D WUHB
 
 on:
   workflow_dispatch:
@@ -174,14 +174,4 @@ jobs:
 
           cp "$wuhb" "$GITHUB_WORKSPACE/dist/gdu.wuhb"
 
-          test -s "$GITHUB_WORKSPACE/dist/gdu.wuhb"
-
-          ls -lh "$GITHUB_WORKSPACE/dist/gdu.wuhb"
-
-      - name: Upload WUHB only
-        uses: actions/upload-artifact@v4
-        with:
-          name: GDU-V4.3-Overhead-3D-WUHB
-          path: dist/gdu.wuhb
-          if-no-files-found: error
-          retention-days: 30
+          test -s "$GITHUB_WORKSPACE/dist/gdu.wuhb
