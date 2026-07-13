@@ -144,34 +144,52 @@ jobs:
             -B "$GITHUB_WORKSPACE/build" \
             -DCMAKE_BUILD_TYPE=Release
 
-      - name: Build WUHB
+            - name: Build WUHB
         shell: bash
         run: |
           set -euo pipefail
 
-          cmake --build "$GITHUB_WORKSPACE/build" \
+          BUILD_DIR="$GITHUB_WORKSPACE/build"
+          DIST_DIR="$GITHUB_WORKSPACE/dist"
+
+          cmake --build "$BUILD_DIR" \
             --target gdu_wuhb \
             --parallel 2
 
-          wuhb="$(find "$GITHUB_WORKSPACE/build" \
+          WUHB_FILE="$(find "$BUILD_DIR" \
             -type f \
             -name 'gdu.wuhb' \
             -print \
             -quit)"
 
-          if [ -z "$wuhb" ] || [ ! -s "$wuhb" ]; then
-            echo "::error::gdu.wuhb was not generated."
-
-            find "$GITHUB_WORKSPACE/build" \
-              -maxdepth 3 \
+          if [ -z "$WUHB_FILE" ]; then
+            WUHB_FILE="$(find "$BUILD_DIR" \
               -type f \
-              -print
+              -name '*.wuhb' \
+              -print \
+              -quit)"
+          fi
 
+          if [ -z "$WUHB_FILE" ] || [ ! -s "$WUHB_FILE" ]; then
+            echo "::error::gdu.wuhb was not generated."
+            find "$BUILD_DIR" -maxdepth 3 -type f -print
             exit 1
           fi
 
-          mkdir -p "$GITHUB_WORKSPACE/dist"
+          rm -rf "$DIST_DIR"
+          mkdir -p "$DIST_DIR"
 
-          cp "$wuhb" "$GITHUB_WORKSPACE/dist/gdu.wuhb"
+          cp "$WUHB_FILE" "$DIST_DIR/gdu.wuhb"
 
-          test -s "$GITHUB_WORKSPACE/dist/gdu.wuhb
+          test -s "$DIST_DIR/gdu.wuhb"
+
+          echo "WUHB generated successfully:"
+          ls -lh "$DIST_DIR/gdu.wuhb"
+
+      - name: Upload WUHB only
+        uses: actions/upload-artifact@v4
+        with:
+          name: GDU-V4.3-WUHB
+          path: dist/gdu.wuhb
+          if-no-files-found: error
+          retention-days: 30
