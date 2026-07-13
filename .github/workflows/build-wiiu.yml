@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build:
-    name: Compile GDU
+    name: Compile GDU for Aroma
     runs-on: ubuntu-latest
 
     container:
@@ -21,24 +21,41 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Locate and extract project
+      - name: Add devkitPro tools to PATH
         shell: bash
         run: |
           set -euo pipefail
 
+          echo "/opt/devkitpro/devkitPPC/bin" >> "${GITHUB_PATH}"
+          echo "/opt/devkitpro/tools/bin" >> "${GITHUB_PATH}"
+          echo "/opt/devkitpro/portlibs/wiiu/bin" >> "${GITHUB_PATH}"
+
+          echo "DEVKITPRO=/opt/devkitpro" >> "${GITHUB_ENV}"
+          echo "DEVKITPPC=/opt/devkitpro/devkitPPC" >> "${GITHUB_ENV}"
+
+      - name: Locate and extract GDU project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Repository contents:"
+          find "${GITHUB_WORKSPACE}" -maxdepth 2 -type f -print
+
           if [ -f "${GITHUB_WORKSPACE}/CMakeLists.txt" ]; then
             PROJECT_DIR="${GITHUB_WORKSPACE}"
+            echo "Project already extracted at repository root."
           else
             ZIP_FILE="$(find "${GITHUB_WORKSPACE}" -maxdepth 1 -type f -name "*.zip" -print -quit)"
 
             if [ -z "${ZIP_FILE}" ]; then
-              echo "ERROR: No ZIP file was found."
+              echo "::error::No ZIP archive was found in the repository."
               exit 1
             fi
 
-            echo "Extracting ${ZIP_FILE}"
+            echo "Extracting archive: ${ZIP_FILE}"
 
             EXTRACT_DIR="${GITHUB_WORKSPACE}/extracted-project"
+
             rm -rf "${EXTRACT_DIR}"
             mkdir -p "${EXTRACT_DIR}"
 
@@ -47,7 +64,7 @@ jobs:
             CMAKE_FILE="$(find "${EXTRACT_DIR}" -type f -name "CMakeLists.txt" -print -quit)"
 
             if [ -z "${CMAKE_FILE}" ]; then
-              echo "ERROR: CMakeLists.txt was not found inside the ZIP."
+              echo "::error::CMakeLists.txt was not found inside the archive."
               exit 1
             fi
 
@@ -56,7 +73,9 @@ jobs:
 
           PROJECT_DIR="$(realpath "${PROJECT_DIR}")"
 
-          echo "Project directory: ${PROJECT_DIR}"
+          echo "Detected project directory:"
+          echo "${PROJECT_DIR}"
+
           echo "PROJECT_DIR=${PROJECT_DIR}" >> "${GITHUB_ENV}"
 
       - name: Verify project files
@@ -64,48 +83,67 @@ jobs:
         run: |
           set -euo pipefail
 
-          test -f "${PROJECT_DIR}/CMakeLists.txt"
-          test -f "${PROJECT_DIR}/source/main.cpp"
-          test -f "${PROJECT_DIR}/source/Game.cpp"
-          test -f "${PROJECT_DIR}/source/LevelPack.cpp"
-          test -f "${PROJECT_DIR}/include/gdu/Game.hpp"
-          test -f "${PROJECT_DIR}/include/gdu/LevelPack.hpp"
-          test -f "${PROJECT_DIR}/assets/levels/pack.json"
-          test -f "${PROJECT_DIR}/tools/validate_levels.py"
+          REQUIRED_FILES=(
+            "CMakeLists.txt"
+            "source/main.cpp"
+            "source/Game.cpp"
+            "source/LevelPack.cpp"
+            "include/gdu/Game.hpp"
+            "include/gdu/LevelPack.hpp"
+            "assets/levels/pack.json"
+            "tools/validate_levels.py"
+          )
 
-          echo "Project files found."
+          for FILE in "${REQUIRED_FILES[@]}"; do
+            if [ ! -f "${PROJECT_DIR}/${FILE}" ]; then
+              echo "::error::Missing file: ${FILE}"
+              exit 1
+            fi
+
+            echo "Found: ${FILE}"
+          done
 
       - name: Validate levels
         shell: bash
         run: |
           set -euo pipefail
+
           cd "${PROJECT_DIR}"
           python tools/validate_levels.py
 
-      - name: Validate music
+      - name: Validate music files
         shell: bash
         run: |
           set -euo pipefail
 
-          MUSIC_COUNT="$(find "${PROJECT_DIR}/assets/music" -maxdepth 1 -type f -name "*.ogg" | wc -l | tr -d " ")"
-
-          echo "Music files found: ${MUSIC_COUNT}"
-
-          if [ "${MUSIC_COUNT}" -ne 21 ]; then
-            echo "ERROR: Expected 21 OGG files."
+          if [ ! -d "${PROJECT_DIR}/assets/music" ]; then
+            echo "::error::The assets/music directory is missing."
             exit 1
           fi
 
-      - name: Check Wii U tools
+          MUSIC_COUNT="$(find "${PROJECT_DIR}/assets/music" -maxdepth 1 -type f -name "*.ogg" | wc -l | tr -d " ")"
+
+          echo "OGG music files found: ${MUSIC_COUNT}"
+
+          if [ "${MUSIC_COUNT}" -ne 21 ]; then
+            echo "::error::Expected 21 OGG music files, found ${MUSIC_COUNT}."
+            exit 1
+          fi
+
+      - name: Check Wii U development tools
         shell: bash
         run: |
           set -euo pipefail
 
-          command -v powerpc-eabi-g++
-          command -v wuhbtool
-          command -v elf2rpl
-
+          test -x /opt/devkitpro/devkitPPC/bin/powerpc-eabi-g++
+          test -x /opt/devkitpro/tools/bin/elf2rpl
+          test -x /opt/devkitpro/tools/bin/wuhbtool
           test -x /opt/devkitpro/portlibs/wiiu/bin/powerpc-eabi-cmake
+
+          powerpc-eabi-g++ --version
+          cmake --version
+
+          echo "All Wii U development tools were found."
 
       - name: Configure Wii U build
         shell: bash
@@ -115,63 +153,113 @@ jobs:
           BUILD_DIR="${GITHUB_WORKSPACE}/build"
 
           rm -rf "${BUILD_DIR}"
+          mkdir -p "${BUILD_DIR}"
 
           /opt/devkitpro/portlibs/wiiu/bin/powerpc-eabi-cmake \
             -S "${PROJECT_DIR}" \
             -B "${BUILD_DIR}" \
             -DCMAKE_BUILD_TYPE=Release
 
-      - name: Compile RPX
+      - name: Compile GDU RPX
         shell: bash
         run: |
           set -euo pipefail
 
-          cmake --build "${GITHUB_WORKSPACE}/build" --parallel 2
+          BUILD_DIR="${GITHUB_WORKSPACE}/build"
 
-          test -s "${GITHUB_WORKSPACE}/build/gdu.rpx"
+          cmake --build "${BUILD_DIR}" --parallel 2
 
-          ls -lh "${GITHUB_WORKSPACE}/build/gdu.rpx"
+          echo "Build directory contents:"
+          find "${BUILD_DIR}" -maxdepth 3 -type f -print
 
-      - name: Create WUHB
+          RPX_FILE="$(find "${BUILD_DIR}" -type f -name "gdu.rpx" -print -quit)"
+
+          if [ -z "${RPX_FILE}" ]; then
+            RPX_FILE="$(find "${BUILD_DIR}" -type f -name "*.rpx" -print -quit)"
+          fi
+
+          if [ -z "${RPX_FILE}" ]; then
+            echo "::error::Compilation finished without producing an RPX file."
+            exit 1
+          fi
+
+          if [ ! -s "${RPX_FILE}" ]; then
+            echo "::error::The generated RPX file is empty."
+            exit 1
+          fi
+
+          echo "RPX_FILE=${RPX_FILE}" >> "${GITHUB_ENV}"
+
+          echo "Generated RPX:"
+          ls -lh "${RPX_FILE}"
+
+      - name: Create GDU WUHB
         shell: bash
         run: |
           set -euo pipefail
 
-          wuhbtool \
-            "${GITHUB_WORKSPACE}/build/gdu.rpx" \
-            "${GITHUB_WORKSPACE}/build/gdu.wuhb" \
+          WUHB_FILE="${GITHUB_WORKSPACE}/build/gdu.wuhb"
+
+          /opt/devkitpro/tools/bin/wuhbtool \
+            "${RPX_FILE}" \
+            "${WUHB_FILE}" \
             --name="GDU - Pulse Rift" \
             --short-name="GDU" \
             --author="Eitan1414" \
             --content="${PROJECT_DIR}/assets"
 
-          test -s "${GITHUB_WORKSPACE}/build/gdu.wuhb"
+          if [ ! -s "${WUHB_FILE}" ]; then
+            echo "::error::The WUHB package was not created."
+            exit 1
+          fi
 
-          ls -lh "${GITHUB_WORKSPACE}/build/gdu.wuhb"
+          echo "WUHB_FILE=${WUHB_FILE}" >> "${GITHUB_ENV}"
 
-      - name: Create SD package
+          echo "Generated WUHB:"
+          ls -lh "${WUHB_FILE}"
+
+      - name: Prepare Aroma SD card package
         shell: bash
         run: |
           set -euo pipefail
 
-          APP_DIR="${GITHUB_WORKSPACE}/dist/wiiu/apps/gdu"
+          DIST_DIR="${GITHUB_WORKSPACE}/dist"
+          APP_DIR="${DIST_DIR}/wiiu/apps/gdu"
 
-          rm -rf "${GITHUB_WORKSPACE}/dist"
+          rm -rf "${DIST_DIR}"
           mkdir -p "${APP_DIR}"
 
-          cp "${GITHUB_WORKSPACE}/build/gdu.wuhb" "${APP_DIR}/gdu.wuhb"
-          cp "${GITHUB_WORKSPACE}/build/gdu.rpx" "${APP_DIR}/gdu.rpx"
+          cp "${WUHB_FILE}" "${APP_DIR}/gdu.wuhb"
+          cp "${RPX_FILE}" "${APP_DIR}/gdu.rpx"
+
+          if [ -d "${PROJECT_DIR}/assets" ]; then
+            cp -R "${PROJECT_DIR}/assets" "${APP_DIR}/assets"
+          fi
 
           if [ -f "${PROJECT_DIR}/README.md" ]; then
             cp "${PROJECT_DIR}/README.md" "${APP_DIR}/README.txt"
           fi
 
-          find "${GITHUB_WORKSPACE}/dist" -type f -print
+          cat > "${APP_DIR}/INSTALL.txt" << 'EOF'
+          GDU - Installation Aroma
 
-      - name: Upload Wii U build
+          Copy the wiiu folder to the root of the Wii U SD card.
+
+          Final executable location:
+          SD:/wiiu/apps/gdu/gdu.wuhb
+
+          Launch GDU from the Wii U Menu or the Homebrew Launcher.
+
+          Do not install this package with WUP Installer GX2.
+          EOF
+
+          echo "Final package contents:"
+          find "${DIST_DIR}" -type f -print
+
+      - name: Upload GDU Wii U artifact
         uses: actions/upload-artifact@v4
         with:
           name: GDU-WiiU-Aroma
-          path: dist
+          path: dist/
           if-no-files-found: error
           retention-days: 30
