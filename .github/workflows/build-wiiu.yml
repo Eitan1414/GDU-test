@@ -1,17 +1,16 @@
-name: Build GDU V4.1 WUHB
+name: Build GDU V4.3 Overhead 3D WUHB
 
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [main]
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: Build GDU WUHB
+    name: Build WUHB only
     runs-on: ubuntu-latest
 
     container:
@@ -39,228 +38,150 @@ jobs:
           set -euo pipefail
 
           if [ -f "$GITHUB_WORKSPACE/CMakeLists.txt" ]; then
-            PROJECT_DIR="$GITHUB_WORKSPACE"
-            echo "Project found at repository root."
+            project_dir="$GITHUB_WORKSPACE"
           else
-            ZIP_FILE=""
-
-            if [ -f "$GITHUB_WORKSPACE/GDU-v4.1-pro-controller-layout-fix.zip" ]; then
-              ZIP_FILE="$GITHUB_WORKSPACE/GDU-v4.1-pro-controller-layout-fix.zip"
-            else
-              ZIP_FILE="$(find "$GITHUB_WORKSPACE" \
-                -maxdepth 1 \
-                -type f \
-                -name 'GDU*.zip' \
-                -print \
-                -quit)"
-            fi
-
-            if [ -z "$ZIP_FILE" ]; then
-              echo "::error::No GDU ZIP archive was found."
-              exit 1
-            fi
-
-            EXTRACT_DIR="$GITHUB_WORKSPACE/extracted-project"
-
-            rm -rf "$EXTRACT_DIR"
-            mkdir -p "$EXTRACT_DIR"
-
-            echo "Extracting: $ZIP_FILE"
-            unzip -q "$ZIP_FILE" -d "$EXTRACT_DIR"
-
-            CMAKE_FILE="$(find "$EXTRACT_DIR" \
+            zip_file="$(find "$GITHUB_WORKSPACE" \
+              -maxdepth 1 \
               -type f \
-              -name 'CMakeLists.txt' \
+              -name 'GDU*.zip' \
               -print \
               -quit)"
 
-            if [ -z "$CMAKE_FILE" ]; then
-              echo "::error::CMakeLists.txt was not found inside the archive."
+            if [ -z "$zip_file" ]; then
+              echo "::error::No extracted GDU project or GDU ZIP archive was found."
               exit 1
             fi
 
-            PROJECT_DIR="$(dirname "$CMAKE_FILE")"
-          fi
+            extract_dir="$GITHUB_WORKSPACE/extracted-project"
 
-          PROJECT_DIR="$(realpath "$PROJECT_DIR")"
+            rm -rf "$extract_dir"
+            mkdir -p "$extract_dir"
 
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Detected project directory: $PROJECT_DIR"
+            unzip -q "$zip_file" -d "$extract_dir"
 
-      - name: Verify source files
-        shell: bash
-        run: |
-          set -euo pipefail
+            cmake_file="$(find "$extract_dir" \
+              -type f \
+              -name CMakeLists.txt \
+              -print \
+              -quit)"
 
-          REQUIRED_FILES=(
-            "CMakeLists.txt"
-            "source/main.cpp"
-            "source/Game.cpp"
-            "source/LevelPack.cpp"
-            "source/Renderer.cpp"
-            "source/VisualEffects.cpp"
-            "include/gdu/Game.hpp"
-            "include/gdu/LevelPack.hpp"
-            "include/gdu/Renderer.hpp"
-            "include/gdu/VisualEffects.hpp"
-            "assets/levels/pack.json"
-            "assets/music/manifest.json"
-            "tools/validate_levels.py"
-            "tools/validate_audio_durations.py"
-          )
-
-          for FILE in "${REQUIRED_FILES[@]}"; do
-            if [ ! -s "$PROJECT_DIR/$FILE" ]; then
-              echo "::error::Missing or empty file: $FILE"
+            if [ -z "$cmake_file" ]; then
+              echo "::error::CMakeLists.txt was not found in the archive."
               exit 1
             fi
 
-            echo "Found: $FILE"
-          done
-
-      - name: Verify CMake WUHB configuration
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          CMAKE_FILE="$PROJECT_DIR/CMakeLists.txt"
-
-          if grep -qE 'target_link_libraries\s*\(\s*gdu\s+PRIVATE\s+padscore' "$CMAKE_FILE"; then
-            echo "::error::Invalid padscore library linkage detected."
-            exit 1
+            project_dir="$(dirname "$cmake_file")"
           fi
 
-          if ! grep -q 'wut_create_rpx(gdu)' "$CMAKE_FILE"; then
-            echo "::error::wut_create_rpx(gdu) is missing."
-            exit 1
-          fi
+          project_dir="$(realpath "$project_dir")"
 
-          if ! grep -q 'wut_create_wuhb(gdu' "$CMAKE_FILE"; then
-            echo "::error::wut_create_wuhb(gdu) is missing."
-            exit 1
-          fi
+          echo "PROJECT_DIR=$project_dir" >> "$GITHUB_ENV"
+          echo "Project: $project_dir"
 
-          echo "CMake WUHB configuration is valid."
-
-      - name: Validate levels
+      - name: Validate campaign and audio
         shell: bash
         run: |
           set -euo pipefail
 
           cd "$PROJECT_DIR"
+
           python3 tools/validate_levels.py
-
-      - name: Validate audio
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cd "$PROJECT_DIR"
           python3 tools/validate_audio_durations.py
 
-          MUSIC_COUNT="$(find assets/music \
+          test "$(find assets/music \
             -maxdepth 1 \
             -type f \
             -name '*.ogg' |
             wc -l |
-            tr -d ' ')"
+            tr -d ' ')" -eq 22
 
-          echo "OGG files found: $MUSIC_COUNT"
-
-          if [ "$MUSIC_COUNT" -ne 22 ]; then
-            echo "::error::Expected 22 OGG files, found $MUSIC_COUNT."
-            exit 1
-          fi
-
-      - name: Check Wii U build tools
+      - name: Verify source tree
         shell: bash
         run: |
           set -euo pipefail
 
-          test -x /opt/devkitpro/devkitPPC/bin/powerpc-eabi-g++
-          test -x /opt/devkitpro/tools/bin/elf2rpl
-          test -x /opt/devkitpro/tools/bin/wuhbtool
-          test -x /opt/devkitpro/portlibs/wiiu/bin/powerpc-eabi-cmake
+          cd "$PROJECT_DIR"
 
-          powerpc-eabi-g++ --version
-          cmake --version
+          for file in \
+            CMakeLists.txt \
+            source/main.cpp \
+            source/Game.cpp \
+            source/LevelPack.cpp \
+            source/Renderer.cpp \
+            source/VisualEffects.cpp \
+            include/gdu/Game.hpp \
+            include/gdu/Renderer.hpp \
+            include/gdu/VisualEffects.hpp \
+            assets/levels/pack.json; do
+
+            test -s "$file" || {
+              echo "::error::Missing $file"
+              exit 1
+            }
+          done
+
+          if grep -q 'target_link_libraries *(gdu PRIVATE padscore' CMakeLists.txt; then
+            echo "::error::Invalid -lpadscore linkage detected."
+            exit 1
+          fi
+
+          grep -q 'wut_create_wuhb' CMakeLists.txt
+          grep -q 'ffast-math' CMakeLists.txt
+          grep -q 'fomit-frame-pointer' CMakeLists.txt
+          grep -q 'drawOverheadTrackRun' source/main.cpp
+          grep -q 'kSecretPhraseMasks' source/Game.cpp
+          grep -q 'bool gapAt' include/gdu/Game.hpp
 
       - name: Configure Wii U build
         shell: bash
         run: |
           set -euo pipefail
 
-          BUILD_DIR="$GITHUB_WORKSPACE/build"
-
-          rm -rf "$BUILD_DIR"
+          rm -rf "$GITHUB_WORKSPACE/build"
 
           /opt/devkitpro/portlibs/wiiu/bin/powerpc-eabi-cmake \
             -S "$PROJECT_DIR" \
-            -B "$BUILD_DIR" \
+            -B "$GITHUB_WORKSPACE/build" \
             -DCMAKE_BUILD_TYPE=Release
 
-      - name: Build GDU WUHB
+      - name: Build WUHB
         shell: bash
         run: |
           set -euo pipefail
 
-          BUILD_DIR="$GITHUB_WORKSPACE/build"
-
-          cmake --build "$BUILD_DIR" \
+          cmake --build "$GITHUB_WORKSPACE/build" \
             --target gdu_wuhb \
             --parallel 2
 
-          echo "Generated build files:"
-          find "$BUILD_DIR" -maxdepth 3 -type f -print
-
-          WUHB_FILE="$(find "$BUILD_DIR" \
+          wuhb="$(find "$GITHUB_WORKSPACE/build" \
             -type f \
             -name 'gdu.wuhb' \
             -print \
             -quit)"
 
-          if [ -z "$WUHB_FILE" ]; then
-            WUHB_FILE="$(find "$BUILD_DIR" \
-              -type f \
-              -name '*.wuhb' \
-              -print \
-              -quit)"
-          fi
+          if [ -z "$wuhb" ] || [ ! -s "$wuhb" ]; then
+            echo "::error::gdu.wuhb was not generated."
 
-          if [ -z "$WUHB_FILE" ] || [ ! -s "$WUHB_FILE" ]; then
-            echo "::error::No valid WUHB file was generated."
+            find "$GITHUB_WORKSPACE/build" \
+              -maxdepth 3 \
+              -type f \
+              -print
+
             exit 1
           fi
 
           mkdir -p "$GITHUB_WORKSPACE/dist"
-          cp "$WUHB_FILE" "$GITHUB_WORKSPACE/dist/gdu.wuhb"
+
+          cp "$wuhb" "$GITHUB_WORKSPACE/dist/gdu.wuhb"
 
           test -s "$GITHUB_WORKSPACE/dist/gdu.wuhb"
 
-          echo "Final WUHB:"
           ls -lh "$GITHUB_WORKSPACE/dist/gdu.wuhb"
 
-      - name: Verify WUHB-only artifact
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          test -s "$GITHUB_WORKSPACE/dist/gdu.wuhb"
-
-          if find "$GITHUB_WORKSPACE/dist" \
-            -type f \
-            -name '*.rpx' |
-            grep -q .; then
-            echo "::error::An RPX was included in the final artifact."
-            exit 1
-          fi
-
-          echo "Final artifact contains only gdu.wuhb."
-
-      - name: Upload GDU WUHB
+      - name: Upload WUHB only
         uses: actions/upload-artifact@v4
         with:
-          name: GDU-V4.1-WUHB
+          name: GDU-V4.3-Overhead-3D-WUHB
           path: dist/gdu.wuhb
           if-no-files-found: error
           retention-days: 30
