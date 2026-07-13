@@ -1,4 +1,4 @@
-me: Build GDU V4.3 Overhead 3D WUHB
+name: Build GDU V4.3 Overhead 3D WUHB
 
 on:
   workflow_dispatch:
