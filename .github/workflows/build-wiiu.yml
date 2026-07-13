@@ -1,18 +1,17 @@
-name: Build GDU for Wii U
+name: Build GDU Wii U
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
-  pull_request:
-  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  build-wiiu:
-    name: Validate and compile GDU
+  build:
+    name: Compile GDU
     runs-on: ubuntu-latest
 
     container:
@@ -22,50 +21,45 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Locate or extract the GDU project
+      - name: Locate and extract project
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Repository contents:"
-          find . -maxdepth 2 -type f -print
-
-          # Cas normal : les fichiers ont été extraits à la racine.
-          if [ -f "CMakeLists.txt" ]; then
-            PROJECT_DIR="$(realpath .)"
-            echo "Project already extracted at repository root."
-
-          # Cas actuel : le dépôt contient seulement l'archive ZIP.
+          if [ -f "${GITHUB_WORKSPACE}/CMakeLists.txt" ]; then
+            PROJECT_DIR="${GITHUB_WORKSPACE}"
           else
-            ZIP_FILE="$(find . -maxdepth 1 -type f \
-              -name 'GDU-test*.zip' -o -name 'GDU*.zip' \
-              -print -quit)"
+            ZIP_FILE="$(find "${GITHUB_WORKSPACE}" -maxdepth 1 -type f -name "*.zip" -print -quit)"
 
             if [ -z "${ZIP_FILE}" ]; then
-              echo "::error::No CMakeLists.txt and no GDU ZIP archive were found."
+              echo "ERROR: No ZIP file was found."
               exit 1
             fi
 
-            echo "Extracting: ${ZIP_FILE}"
-            rm -rf extracted-project
-            mkdir -p extracted-project
-            unzip -q "${ZIP_FILE}" -d extracted-project
+            echo "Extracting ${ZIP_FILE}"
 
-            CMAKE_FILE="$(find extracted-project -type f \
-              -name CMakeLists.txt -print -quit)"
+            EXTRACT_DIR="${GITHUB_WORKSPACE}/extracted-project"
+            rm -rf "${EXTRACT_DIR}"
+            mkdir -p "${EXTRACT_DIR}"
+
+            unzip -q "${ZIP_FILE}" -d "${EXTRACT_DIR}"
+
+            CMAKE_FILE="$(find "${EXTRACT_DIR}" -type f -name "CMakeLists.txt" -print -quit)"
 
             if [ -z "${CMAKE_FILE}" ]; then
-              echo "::error::The ZIP does not contain CMakeLists.txt."
+              echo "ERROR: CMakeLists.txt was not found inside the ZIP."
               exit 1
             fi
 
-            PROJECT_DIR="$(realpath "$(dirname "${CMAKE_FILE}")")"
+            PROJECT_DIR="$(dirname "${CMAKE_FILE}")"
           fi
 
-          echo "Detected project directory: ${PROJECT_DIR}"
+          PROJECT_DIR="$(realpath "${PROJECT_DIR}")"
+
+          echo "Project directory: ${PROJECT_DIR}"
           echo "PROJECT_DIR=${PROJECT_DIR}" >> "${GITHUB_ENV}"
 
-      - name: Check required project files
+      - name: Verify project files
         shell: bash
         run: |
           set -euo pipefail
@@ -76,48 +70,42 @@ jobs:
           test -f "${PROJECT_DIR}/source/LevelPack.cpp"
           test -f "${PROJECT_DIR}/include/gdu/Game.hpp"
           test -f "${PROJECT_DIR}/include/gdu/LevelPack.hpp"
-          test -f "${PROJECT_DIR}/tools/validate_levels.py"
           test -f "${PROJECT_DIR}/assets/levels/pack.json"
+          test -f "${PROJECT_DIR}/tools/validate_levels.py"
 
-          echo "All required project files were found."
+          echo "Project files found."
 
-      - name: Validate the 21 levels
+      - name: Validate levels
         shell: bash
         run: |
           set -euo pipefail
           cd "${PROJECT_DIR}"
           python tools/validate_levels.py
 
-      - name: Validate the music pack
+      - name: Validate music
         shell: bash
         run: |
           set -euo pipefail
 
-          MUSIC_COUNT="$(find "${PROJECT_DIR}/assets/music" \
-            -maxdepth 1 -type f -name '*.ogg' | wc -l | tr -d ' ')"
+          MUSIC_COUNT="$(find "${PROJECT_DIR}/assets/music" -maxdepth 1 -type f -name "*.ogg" | wc -l | tr -d " ")"
 
-          echo "OGG tracks found: ${MUSIC_COUNT}"
+          echo "Music files found: ${MUSIC_COUNT}"
 
           if [ "${MUSIC_COUNT}" -ne 21 ]; then
-            echo "::error::Expected 21 OGG tracks, found ${MUSIC_COUNT}."
+            echo "ERROR: Expected 21 OGG files."
             exit 1
           fi
 
-      - name: Show Wii U tools
+      - name: Check Wii U tools
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "DEVKITPRO=${DEVKITPRO}"
-          echo "DEVKITPPC=${DEVKITPPC}"
-
           command -v powerpc-eabi-g++
-          command -v cmake
           command -v wuhbtool
           command -v elf2rpl
 
-          powerpc-eabi-g++ --version
-          cmake --version
+          test -x /opt/devkitpro/portlibs/wiiu/bin/powerpc-eabi-cmake
 
       - name: Configure Wii U build
         shell: bash
@@ -125,6 +113,7 @@ jobs:
           set -euo pipefail
 
           BUILD_DIR="${GITHUB_WORKSPACE}/build"
+
           rm -rf "${BUILD_DIR}"
 
           /opt/devkitpro/portlibs/wiiu/bin/powerpc-eabi-cmake \
@@ -132,21 +121,18 @@ jobs:
             -B "${BUILD_DIR}" \
             -DCMAKE_BUILD_TYPE=Release
 
-      - name: Compile Wii U RPX
+      - name: Compile RPX
         shell: bash
         run: |
           set -euo pipefail
 
-          cmake --build "${GITHUB_WORKSPACE}/build" \
-            --config Release \
-            --parallel 2
+          cmake --build "${GITHUB_WORKSPACE}/build" --parallel 2
 
           test -s "${GITHUB_WORKSPACE}/build/gdu.rpx"
 
-          echo "RPX successfully compiled:"
           ls -lh "${GITHUB_WORKSPACE}/build/gdu.rpx"
 
-      - name: Create Aroma WUHB
+      - name: Create WUHB
         shell: bash
         run: |
           set -euo pipefail
@@ -157,4 +143,35 @@ jobs:
             --name="GDU - Pulse Rift" \
             --short-name="GDU" \
             --author="Eitan1414" \
-           
+            --content="${PROJECT_DIR}/assets"
+
+          test -s "${GITHUB_WORKSPACE}/build/gdu.wuhb"
+
+          ls -lh "${GITHUB_WORKSPACE}/build/gdu.wuhb"
+
+      - name: Create SD package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP_DIR="${GITHUB_WORKSPACE}/dist/wiiu/apps/gdu"
+
+          rm -rf "${GITHUB_WORKSPACE}/dist"
+          mkdir -p "${APP_DIR}"
+
+          cp "${GITHUB_WORKSPACE}/build/gdu.wuhb" "${APP_DIR}/gdu.wuhb"
+          cp "${GITHUB_WORKSPACE}/build/gdu.rpx" "${APP_DIR}/gdu.rpx"
+
+          if [ -f "${PROJECT_DIR}/README.md" ]; then
+            cp "${PROJECT_DIR}/README.md" "${APP_DIR}/README.txt"
+          fi
+
+          find "${GITHUB_WORKSPACE}/dist" -type f -print
+
+      - name: Upload Wii U build
+        uses: actions/upload-artifact@v4
+        with:
+          name: GDU-WiiU-Aroma
+          path: dist
+          if-no-files-found: error
+          retention-days: 30
