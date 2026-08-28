@@ -47,10 +47,11 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          git clone https://github.com/xzxADIxzx/Join-and-kill-em-together.git upstream-jaket
+          git clone --filter=blob:none --no-checkout https://github.com/xzxADIxzx/Join-and-kill-em-together.git upstream-jaket
           cd upstream-jaket
+          git sparse-checkout init --cone
+          git sparse-checkout set src assets/bundles
           git checkout 1f19c835d993255f58262a8e8f60559260546397
-          rm -f assets/assets.bundle
           unzip -oq /tmp/jm-overlay.zip -d .
           cp ../jaket-mobile-ci/Jaket.Mobile.CI.csproj ./Jaket.Mobile.CI.csproj
 
@@ -70,7 +71,7 @@ jobs:
           mkdir -p package/JaketMobile/bundles
           cp dist/Jaket.Mobile.dll package/JaketMobile/
           cp upstream-jaket/assets/bundles/*.properties package/JaketMobile/bundles/ || true
-          cp upstream-jaket/README.md package/JaketMobile/README.md
+          cp upstream-jaket/README.md package/JaketMobile/README.md || true
           (cd package && zip -r ../Jaket-Mobile-v0.1-CI.zip JaketMobile)
 
       - name: Upload plugin artifact
